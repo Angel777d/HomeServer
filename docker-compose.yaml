@@ -1,0 +1,129 @@
+version: "3.9"
+
+networks:
+    traefik-public:
+        external: true
+    traefik-private:
+        external: false
+
+
+services:
+    traefik:
+        image: "traefik"
+        container_name: traefik
+        hostname: traefik
+
+        restart: unless-stopped
+
+        volumes:
+            - ./data/letsencrypt:/letsencrypt
+            - /var/run/docker.sock:/var/run/docker.sock:ro
+
+        networks:
+            - traefik-public
+            - traefik-private
+
+        ports:
+            - "80:80"
+            - "443:443"
+
+        command:
+            - --log.level=INFO
+            - --entrypoints.web.address=:80
+            - --entrypoints.websecure.address=:443
+            - --providers.docker
+            - --providers.docker.exposedByDefault=false
+            - --api
+            - --certificatesResolvers.le.acme.caServer=https://acme-staging-v02.api.letsencrypt.org/directory
+            - --certificatesresolvers.le.acme.email=${TRAEFIK_SSLEMAIL?Variable not set}
+            - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+            - --certificatesresolvers.le.acme.tlschallenge=true
+        labels:
+            - "traefik.enable=true"
+            # Dashboard
+            - "traefik.http.routers.traefik.rule=Host(`dashboard.${PRIMARY_DOMAIN}`)"
+            - "traefik.http.routers.traefik.service=api@internal"
+            - "traefik.http.routers.traefik.tls=true"
+            - "traefik.http.routers.traefik.tls.certresolver=le"
+            - "traefik.http.routers.traefik.entrypoints=websecure"
+            - "traefik.http.routers.traefik.middlewares=authtraefik"
+            - "traefik.http.middlewares.authtraefik.basicauth.users=devAdmin:$$2y$$05$$h9OxLeY20/5uiXjfPgdRxuFlrfqBf2QifYDgrwsR6rAEgX3/dpOGq" # user:devAdmin, password:devto
+            # global redirect to https
+            - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+            - "traefik.http.routers.http-catchall.entrypoints=web"
+            - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+            # middleware redirect
+            - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+
+
+    auth:
+        build:
+            context: ./services/auth
+        container_name: auth
+        hostname: auth
+
+        restart: unless-stopped
+
+        # dev only
+        volumes:
+            - ./services/auth:/home/auth/auth
+
+        networks:
+            - traefik-private
+
+        expose:
+            - 5000
+
+        # prod config ???
+        #command: gunicorn main:app --bind 0.0.0.0:5000 -k uvicorn.workers.UvicornWorker
+
+        # dev config
+        command: uvicorn --host 0.0.0.0 --port 5000 --reload main:app
+
+        labels:
+            - "traefik.enable=true"
+            - "traefik.http.routers.auth.rule=(Host(`${PRIMARY_DOMAIN}`) && PathPrefix(`/auth`))"
+            #### set TLS (https)
+            - "traefik.http.routers.auth.entrypoints=websecure"
+            - "traefik.http.routers.auth.tls=true"
+            - "traefik.http.routers.auth.tls.certresolver=le"
+
+
+    nginx:
+        image: nginx
+        container_name: nginx
+        hostname: nginx
+
+        restart: unless-stopped
+
+        volumes:
+            - ./static:/usr/share/nginx/html
+
+        networks:
+            - traefik-private
+
+        labels:
+            #### core configs
+            - "traefik.enable=true"
+            - "traefik.http.routers.nginx.rule=Host(`${PRIMARY_DOMAIN}`)"
+            - "traefik.http.services.nginx.loadbalancer.server.port=80"
+            #### set TLS (https)
+            - "traefik.http.routers.nginx.entrypoints=websecure"
+            - "traefik.http.routers.nginx.tls=true"
+            - "traefik.http.routers.nginx.tls.certresolver=le"
+
+#    my-whoami:
+#        image: traefik/whoami
+#        hostname: whoami
+#        container_name: whoami
+#        restart: unless-stopped
+#        labels:
+#            - "traefik.enable=true"
+#            - "traefik.http.routers.whoami.rule=Host(`whoami.${PRIMARY_DOMAIN}`)"
+#            - "traefik.http.routers.whoami.entrypoints=websecure"
+#            - "traefik.http.routers.whoami.tls=true"
+#            - "traefik.http.routers.whoami.tls.certresolver=le"
+#        networks:
+#            - traefik-private
+
